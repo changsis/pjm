@@ -1,0 +1,562 @@
+import matplotlib.pyplot as plt
+import math as m
+import numpy as np
+import openpnm as op
+spacing=2.5*10**-5
+X=11
+Y=30
+Z=30
+pn = op.network.Cubic(shape=[X, Y, Z],spacing=spacing)
+geo = op.geometry.StickAndBall(network=pn, pores=pn.Ps, throats=pn.Ts)
+
+water = op.phases.Water(network=pn)
+
+
+Hg= op.phases.Mercury(network=pn)
+phys = op.physics.Standard(network=pn, phase=Hg, geometry=geo)
+
+np.random.seed(1000000)
+geo['pore.diameter']=np.random.rand(len(pn.Ps))*100#孔隙数
+for i in range(len(pn.Ps)):
+    np.random.seed(i)
+    if geo['pore.diameter'][i]<=20:
+        geo['pore.diameter'][i]=2*(np.random.rand(1)*0.5+9)*10**-6
+    if geo['pore.diameter'][i]<=60 and geo['pore.diameter'][i]>20:
+        geo['pore.diameter'][i]=2*(np.random.rand(1)*0.5+9.5)*10**-6
+    if geo['pore.diameter'][i]<=90 and geo['pore.diameter'][i]>60:
+        geo['pore.diameter'][i]=2*(np.random.rand(1)*1+10)*10**-6
+    if geo['pore.diameter'][i]<=97 and geo['pore.diameter'][i]>90:
+        geo['pore.diameter'][i]=2*(np.random.rand(1)*1+11)*10**-6
+    if geo['pore.diameter'][i]<=100 and geo['pore.diameter'][i]>97:
+        geo['pore.diameter'][i]=2*(np.random.rand(1)*0.5+12)*10**-6
+
+np.random.seed(1000001)    
+geo['throat.diameter']=np.random.rand(len(pn.Ts))*100#吼道数
+for i in range(len(pn.Ts)):
+    np.random.seed(i+20000)
+    if geo['throat.diameter'][i]<=15:
+        geo['throat.diameter'][i]=2*(np.random.rand(1)*1+4)*10**-6
+    if geo['throat.diameter'][i]>15 and  geo['throat.diameter'][i]<=53:
+        geo['throat.diameter'][i]=2*(np.random.rand(1)*1+5)*10**-6
+    if geo['throat.diameter'][i]>53 and  geo['throat.diameter'][i]<=88:
+        geo['throat.diameter'][i]=2*(np.random.rand(1)*1+6)*10**-6
+    if geo['throat.diameter'][i]>88 and  geo['throat.diameter'][i]<=100:
+        geo['throat.diameter'][i]=2*(np.random.rand(1)*1.5+7)*10**-6
+    
+for i in range(len(pn.Ts)):#喉道数
+    j=pn['throat.conns'][i][0]
+    k=pn['throat.conns'][i][1]
+    if geo['throat.diameter'][i]>geo['pore.diameter'][j] or geo['throat.diameter'][i]>geo['pore.diameter'][k]:
+        geo['throat.diameter'][i]=min(geo['pore.diameter'][j],geo['pore.diameter'][k])
+    geo['throat.length'][i]=spacing-geo['pore.diameter'][j]/2-geo['pore.diameter'][k]/2
+
+for i in range(len(pn.Ts)):#喉道数
+    geo['throat.volume'][i]=geo['throat.diameter'][i]**2/4*m.pi*geo['throat.length'][i]
+    
+for i in range(len(pn.Ps)):
+    geo['pore.volume'][i]=geo['pore.diameter'][i]**3/6*m.pi
+#阳极三维重构，孔隙尺寸30-70nm之间，吼道43.5-68nm之间，两孔中心点距离为spacing，
+#孔隙简化成球，喉道简化成圆柱
+v0=(X-1)*(Y-1)*(Z-1)*spacing**3#体积
+v1=sum(geo['throat.volume'])+sum(geo['pore.volume'])
+kongxilv=v1/v0
+print(kongxilv)#孔隙率
+
+#plt.hist(geo['throat.diameter'],bins=10)
+    
+#mip = op.algorithms.Porosimetry(network=pn)
+#mip.setup(phase=Hg)
+#mip.set_inlets(pores=pn.pores(['left', 'right', 'top', 'bottom']))
+#mip.run()
+#mip.plot_intrusion_curve()#毛细压力曲线
+
+phys_h2o = op.physics.Standard(network=pn, phase=water, geometry=geo)
+n=0.001#水的粘度
+for i in range(len(pn.Ts)):#吼道数
+    phys_h2o['throat.hydraulic_conductance'][i]=1.14*geo['throat.diameter'][i]**4/n/16/geo['throat.length'][i]    
+
+
+
+    
+
+
+
+
+def nd(network,physics,phases, geometry,pores_nd,fy,yx,Df,k):
+    for i in range(len(network.Ps)):#孔隙数
+        a=b=c=d=e=0
+        Ps = network.find_neighbor_pores(pores=network.Ps[i])
+        for j in range(len(Ps)):
+            Ts = network.find_neighbor_throats(pores=[Ps[j],network.Ps[i]], mode='xnor')
+            Qij=physics['throat.hydraulic_conductance'][Ts]*(phases['pore.pressure'][i]-phases['pore.pressure'][Ps[j]])
+           
+            KS=Df*geometry['throat.volume'][Ts]/geometry['throat.length'][Ts]/geometry['throat.length'][Ts]
+            a=a+max(Qij,0)
+            b=b+pores_nd[Ps[j]]*max(-Qij,0)
+            c=c+KS
+            d=d+KS*pores_nd[Ps[j]]
+        if fy==0:
+            e=0
+        else:
+            e=m.pi*geometry['pore.diameter'][i]**2*k
+        pores_nd[i]=(b+d)/(a+c+yx*e)
+#浓度迭代，a，b，c，d分别是不考虑反应源项时一阶迎风格式提取cj后的累加数。Ps是相邻孔隙，Ts是单次计算时链接两个孔隙的喉道
+
+def panwen(i0,i1,wc):
+    max1=0
+    for i in range(len(i1)):#孔隙数
+        max0=abs((i1[i]-i0[i])/(i1[i]+0.001))
+        max1=max(max0,max1)
+    print(max1)
+    if max1<wc:
+        f=1
+    else:
+        f=0
+    return f
+
+#判断迭代是否结束
+
+
+
+
+def baoheyali(phases,H,P,network):
+    for i in range(len(network.Ps)):#孔隙数
+        P[i]=phases['pore.pressure'][i]*H
+         
+
+
+
+def Invasion(inlet,network,phases,geometry,c=0,d=1):
+    while c!=d:
+        c=0
+        for i in range(len(inlet)):
+            a=set(inlet[i])&set(network.pores(['back', 'top', 'bottom']))
+            if len(a)==0:
+                z={}
+                for j in range(len(inlet[i])):
+                    Ps=network.find_neighbor_pores(pores=inlet[i][j])
+                    for k in range(len(Ps)):
+                        if Ps[k] in inlet[i]:
+                            continue
+                        else:
+                            Ts = network.find_neighbor_throats(pores=[Ps[k],inlet[i][j]], mode='xnor')
+                            p=2*0.071/geometry['throat.diameter'][Ts]+(phases['pore.pressure'][Ps[k]]-phases['pore.pressure'][inlet[i][j]])
+                            #接触角未考虑
+                            z[p]=Ps[k]
+                Pss=min(list(z.keys()))
+                inlet[i].append(z[Pss])
+            else:
+                c=c+1
+            d=len(inlet)
+        for i in range(len(inlet)):
+            for l in range(len(inlet)):
+                if i !=l:
+                    b=set(inlet[i])&set(inlet(l))
+                    if len(b)!=0:
+                        inlet[i].extend(inlet[l])
+                        inlet.pop(l)
+                 
+def Palg(network,phases,Pin,inlet,Pout,outlet,physics):
+    
+    g=x=0
+    for i in range(len(network.Ps)):
+        if i in inlet:
+            phases['pore.pressure'][i]=Pin
+        if i in outlet:
+            phases['pore.pressure'][i]=Pout
+    while g!=1 and x<1000:
+        
+        pores_pressure0=[]
+        for i in range(len(pn.Ps)):#孔隙数
+            pores_pressure0.append(phases['pore.pressure'][i])
+        
+        
+        for i in range(len(network.Ps)):
+            if network.Ps[i] in inlet or network.Ps[i] in outlet:
+                continue
+            else:
+                Ps=network.find_neighbor_pores(pores=network.Ps[i])
+                a=b=0
+                for j in range(len(Ps)):
+                    Ts = network.find_neighbor_throats(pores=[Ps[j],network.Ps[i]], mode='xnor')
+                    a=a+ physics['throat.hydraulic_conductance'][Ts]
+                    b=b+ physics['throat.hydraulic_conductance'][Ts]*phases['pore.pressure'][Ps[j]]
+                phases['pore.pressure'][i]=b/a
+                
+        for i in range(len(network.Ps)):
+            if i in inlet:
+                phases['pore.pressure'][i]=Pin
+            if i in outlet:
+                phases['pore.pressure'][i]=Pout
+                
+        g=panwen(i0=pores_pressure0,i1=phases['pore.pressure'],wc=4.0*10**-9)
+        x=x+1
+        if x==1000:
+            print('输出无效')
+
+def Dff(network,geometry,Df,Z):
+    x=[]
+    x0=[]
+    z=g=y=0
+    for i in range(len(network.Ps)):#孔隙数
+        x.append(0)
+        x0.append(0)
+    while g!=1 and y<1000:
+        for i in range(len(network.Ps)):
+            x0[i]=x[i]
+        for i in range(len(network.Ps)):#孔隙数
+            c=d=0
+            if network.Ps[i] in network.pores('back'):
+                x[i]=1
+            else:
+                Ps = network.find_neighbor_pores(pores=network.Ps[i])
+                for j in range(len(Ps)):
+                    Ts = network.find_neighbor_throats(pores=[Ps[j],network.Ps[i]], mode='xnor')
+                    KS=Df*geometry['throat.volume'][Ts]/geometry['throat.length'][Ts]/geometry['throat.length'][Ts]
+                    c=c+KS
+                    d=d+KS*x[Ps[j]]
+                x[i]=d/c
+        panwen(x0,x,0.01)
+        y=y+1
+        if y==1000:
+            print('输出无效')
+    for i in range(len(network.Ps)):
+        if network.Ps[i] in network.pores('front'):
+            z=z+x[i]*geo['pore.volume'][i]
+    z=z*Z
+    return z
+
+def v(x1,x2):
+    a=7.25*10**-4
+    b=5*10**-4
+    c=2.96
+    d=0
+    v=(b*b-x2*x2)
+    for i in range(4):
+        d=d+(32*b*b/m.pi**3)*((-1)**(i+1)*m.cosh((2*i+1)*m.pi*x1/2/b)*m.cosh((2*i+1)*m.pi*x2/2/b)/(2*i+1)**3/m.cosh((2*i+1)*m.pi*a/2/b))
+    v=c*(v+d)/2/0.001
+    return v
+
+
+Palg(network=pn,phases=water,Pin=101325.05,inlet=pn.pores('back'),Pout=101325,outlet=pn.pores('front'),physics=phys_h2o)
+print('压力场输出完成')
+op.io.VTK.save(network=pn, phases=water, filename='yl')
+
+yl=[]
+for i in range(len(pn.Ps)):
+    yl.append(water['pore.pressure'][i])
+    
+    
+    
+Q1=0   
+for i in range(len(pn.Ps)):
+    if pn.Ps[i] in pn.pores('back'):
+        Ps = pn.find_neighbor_pores(pores=pn.Ps[i])
+        for j in range(len(Ps)):
+            Ts = pn.find_neighbor_throats(pores=[Ps[j],pn.Ps[i]], mode='xnor')
+            Q1=Q1+phys_h2o['throat.hydraulic_conductance'][Ts]*(water['pore.pressure'][i]-water['pore.pressure'][Ps[j]])
+    
+    Kjd=Q1*0.001*Z/X/Y/spacing/(0.05)
+print(Kjd)
+
+       
+ia=[]
+for i00 in range(7):
+    E=0.3+0.1*i00
+    ii0=0.1194
+    ee=-0.22
+    C0=500
+    T=298
+    F=96485
+    R=8.314
+    Df=5*10**-10
+    Df2=1.9*10**-9
+    
+    k0=ii0*m.exp((E-ee)*0.5*F/R/T)/2/F/C0
+    
+    
+    
+    
+    pn = op.network.Cubic(shape=[X, Y, Z],spacing=spacing)
+    geo = op.geometry.StickAndBall(network=pn, pores=pn.Ps, throats=pn.Ts)
+    
+    water = op.phases.Water(network=pn)
+    phys_h2o = op.physics.Standard(network=pn, phase=water, geometry=geo)
+    
+    np.random.seed(1000000)
+    geo['pore.diameter']=np.random.rand(len(pn.Ps))*100#孔隙数
+    for i in range(len(pn.Ps)):
+        np.random.seed(i)
+        if geo['pore.diameter'][i]<=20:
+            geo['pore.diameter'][i]=2*(np.random.rand(1)*0.5+9)*10**-6
+        if geo['pore.diameter'][i]<=60 and geo['pore.diameter'][i]>20:
+            geo['pore.diameter'][i]=2*(np.random.rand(1)*0.5+9.5)*10**-6
+        if geo['pore.diameter'][i]<=90 and geo['pore.diameter'][i]>60:
+            geo['pore.diameter'][i]=2*(np.random.rand(1)*1+10)*10**-6
+        if geo['pore.diameter'][i]<=97 and geo['pore.diameter'][i]>90:
+            geo['pore.diameter'][i]=2*(np.random.rand(1)*1+11)*10**-6
+        if geo['pore.diameter'][i]<=100 and geo['pore.diameter'][i]>97:
+            geo['pore.diameter'][i]=2*(np.random.rand(1)*0.5+12)*10**-6
+    np.random.seed(1000001)   
+    geo['throat.diameter']=np.random.rand(len(pn.Ts))*100#吼道数
+    for i in range(len(pn.Ts)):
+        np.random.seed(i+20000)
+        if geo['throat.diameter'][i]<=15:
+            geo['throat.diameter'][i]=2*(np.random.rand(1)*1+4)*10**-6
+        if geo['throat.diameter'][i]>15 and  geo['throat.diameter'][i]<=53:
+            geo['throat.diameter'][i]=2*(np.random.rand(1)*1+5)*10**-6
+        if geo['throat.diameter'][i]>53 and  geo['throat.diameter'][i]<=88:
+            geo['throat.diameter'][i]=2*(np.random.rand(1)*1+6)*10**-6
+        if geo['throat.diameter'][i]>88 and  geo['throat.diameter'][i]<=100:
+            geo['throat.diameter'][i]=2*(np.random.rand(1)*1.5+7)*10**-6
+        
+    for i in range(len(pn.Ts)):#喉道数
+        j=pn['throat.conns'][i][0]
+        k=pn['throat.conns'][i][1]
+        if geo['throat.diameter'][i]>geo['pore.diameter'][j] or geo['throat.diameter'][i]>geo['pore.diameter'][k]:
+            geo['throat.diameter'][i]=min(geo['pore.diameter'][j],geo['pore.diameter'][k])
+        geo['throat.length'][i]=spacing-geo['pore.diameter'][j]/2-geo['pore.diameter'][k]/2
+    
+    for i in range(len(pn.Ts)):#喉道数
+        geo['throat.volume'][i]=geo['throat.diameter'][i]**2/4*m.pi*geo['throat.length'][i]
+        
+    for i in range(len(pn.Ps)):
+        geo['pore.volume'][i]=geo['pore.diameter'][i]**3/6*m.pi
+    n=0.001#水的粘度
+    for i in range(len(pn.Ts)):#吼道数
+        phys_h2o['throat.hydraulic_conductance'][i]=1.14*geo['throat.diameter'][i]**4/n/16/geo['throat.length'][i]
+        
+    
+    
+    
+    pn2 = op.network.Cubic(shape=[X+10, Y, Z],spacing=spacing)
+    geo2 = op.geometry.StickAndBall(network=pn2, pores=pn2.Ps, throats=pn2.Ts)
+    
+    water2 = op.phases.Water(network=pn2)
+    
+    phys_h2o2 = op.physics.Standard(network=pn2, phase=water2, geometry=geo2)
+    
+    
+    for i in range(len(pn2.Ps)):
+        if i<9900:
+            geo2['pore.diameter'][i]=geo['pore.diameter'][i]
+        else:
+            geo2['pore.diameter'][i]=2*10**-5
+        
+    for i in range(len(pn2.Ts)):
+        if i <len(pn.Ts):
+            geo2['throat.diameter'][i]=geo['throat.diameter'][i]
+        else:
+             geo2['throat.diameter'][i]=1.2*10**-5
+            
+    for i in range(len(pn2.Ts)):#喉道数
+        j=pn2['throat.conns'][i][0]
+        k=pn2['throat.conns'][i][1]
+        geo2['throat.length'][i]=spacing-geo2['pore.diameter'][j]/2-geo2['pore.diameter'][k]/2
+    
+    for i in range(len(pn2.Ts)):#喉道数
+        geo2['throat.volume'][i]=geo2['throat.diameter'][i]**2/4*m.pi*geo2['throat.length'][i]
+        
+    for i in range(len(pn2.Ps)):
+        geo2['pore.volume'][i]=geo2['pore.diameter'][i]**3/6*m.pi
+    for i in range(len(pn2.Ts)):#吼道数
+        phys_h2o2['throat.hydraulic_conductance'][i]=1.14*geo2['throat.diameter'][i]**4/n/16/geo2['throat.length'][i]
+
+        
+    for i in range(len(pn.Ps)):
+        water['pore.pressure'][i]=yl[i]
+        water2['pore.pressure'][i]=yl[i]
+
+    
+    
+    
+    Ts_sd=[]
+    for i in range(len(pn.Ts)):
+        Ts_sd.append(0)
+    for i in range(len(pn.Ts)):
+        j=pn['throat.conns'][i][0]
+        k=pn['throat.conns'][i][1]
+        Ts_sd[i]=4*phys_h2o['throat.hydraulic_conductance'][i]*(water['pore.pressure'][k]-water['pore.pressure'][j])/m.pi/geo['throat.diameter'][i]**2
+    print('最大速度',max(Ts_sd))
+    print('最小速度',min(Ts_sd))
+    print('孔隙速度计算完成一次')
+    
+    
+    
+    g=x=0
+    pore_nd=np.random.rand(len(pn2.Ps))
+    for i in range(len(pn2.Ps)):
+        if i in pn2.pores('back'):
+            pore_nd[i]=1000
+        else:
+            pore_nd[i]=0
+    while g!=1 and x<1000:      
+        pore_nd0=[]
+        for i in range(len(pn2.Ps)):#孔隙数
+                pore_nd0.append(pore_nd[i])
+                
+                
+                
+        for kk in range(len(pn2.Ps)):
+            i = 30 * 30 * 21 - 1 - kk
+            a=b=c=d=e=0
+            if i <9000:
+                Ps2 = pn2.find_neighbor_pores(pores=pn2.Ps[i])
+                for j in range(len(Ps2)):
+                    Ts2 = pn2.find_neighbor_throats(pores=[Ps2[j],pn2.Ps[i]], mode='xnor')
+                    Qij=phys_h2o2['throat.hydraulic_conductance'][Ts2]*(water2['pore.pressure'][i]-water2['pore.pressure'][Ps2[j]])
+                   
+                    KS=Df*geo2['throat.volume'][Ts2]/geo2['throat.length'][Ts2]/geo2['throat.length'][Ts2]
+                    a=a+max(Qij,0)#流出
+                    b=b+pore_nd[Ps2[j]]*max(-Qij,0)
+                    c=c+KS
+                    d=d+KS*pore_nd[Ps2[j]]
+                pore_nd[i]=(b+d)/(k0+a+c)
+            else:
+                Ps2 = pn2.find_neighbor_pores(pores=pn2.Ps[i])
+                for j in range(len(Ps2)):
+                    Ts2 = pn2.find_neighbor_throats(pores=[Ps2[j],pn2.Ps[i]], mode='xnor')
+                    
+                    if pn2.Ps[i]-Ps2[j] == 1:#流入
+                        x1=-3.625*10**-4+2.5*10**-5*((Ps2[j]%900)//30)
+                        x2=-5*10**-4+2.5*10**-5*((Ps2[j]//900)-10)
+                        v1=-v(x1=x1,x2=x2)
+                        v1=v1*v1/abs(v1)
+                        a=v1*pore_nd[Ps2[j]]*m.pi*geo2['throat.diameter'][Ts2]*geo2['throat.diameter'][Ts2]/4
+                    if pn2.Ps[i]-Ps2[j] == -1:#流出
+                        x1=-3.625*10**-4+2.5*10**-5*((i%900)//30)
+                        x2=-5*10**-4+2.5*10**-5*((i//900)-10)
+                        v1=-v(x1=x1,x2=x2)
+                        v1=v1*v1/abs(v1)
+                        b=v1*m.pi*geo2['throat.diameter'][Ts2]*geo2['throat.diameter'][Ts2]/4
+                    
+                    KS=Df*geo2['throat.volume'][Ts2]/geo2['throat.length'][Ts2]/geo2['throat.length'][Ts2]
+                    c=c+KS
+                    d=d+KS*pore_nd[Ps2[j]]
+                pore_nd[i]=(a+d)/(b+c)
+                
+ 
+        for i in range(len(pn2.Ps)):
+            if i in pn2.pores('back'):
+                pore_nd[i]=1000
+        
+        g=panwen(i0=pore_nd0,i1=pore_nd,wc=0.04)
+        x=x+1
+        print(x)
+
+        if x==1000:
+            print('输出无效')
+    print('甲酸浓度计算完成一次')
+    
+    
+    iaa=[]
+    for i in range(len(pn.Ps)):
+        iaa.append(2*F*k0*pore_nd[i])
+        a=iaa[i]*geo['pore.diameter'][i]
+    b=sum(geo['pore.diameter'])
+    ia.append(a/b)
+    
+    
+    
+    
+    if i00==1:
+        c00=[]
+        for i in range(len(pn.Ps)):
+            if i in pn.pores('front'):
+                c00.append(pore_nd[i])
+        c00=np.array(c00)
+        m=c00.reshape((1,30,30))
+        plt.imshow(m[0,:,:])
+        plt.title('底面浓度分布 (mol/m$^3$)')
+        plt.colorbar()
+        c01=[]
+        for i in range(len(pn2.Ps)):
+            if ((i%900)%30)==15:
+                c01.append(pore_nd[i])
+        c01=np.array(c01)
+        m1=c01.reshape((1,21,30))
+        plt.imshow(m1[0,:,:])
+        plt.title('中间截面浓度分布 (mol/m$^3$)')
+        plt.colorbar()
+    
+    
+    
+    g=x=0
+    pore_Co2_nd=[]
+    for i in range(len(pn.Ps)):
+        pore_Co2_nd.append(0)
+    while g!=1 and x<1000:      
+        pore_Co2_nd0=[]
+        for i in range(len(pn.Ps)):#孔隙数
+            pore_Co2_nd0.append(pore_Co2_nd[i])
+    
+        for i in range(len(pn.Ps)):
+            if i <9000:
+                
+                a=b=c=d=e=0
+                Ps = pn.find_neighbor_pores(pores=pn.Ps[i])
+                for j in range(len(Ps)):
+                    Ts = pn.find_neighbor_throats(pores=[Ps[j],pn.Ps[i]], mode='xnor')
+                    Qij=phys_h2o['throat.hydraulic_conductance'][Ts]*(water['pore.pressure'][i]-water['pore.pressure'][Ps[j]])
+                           
+                    KS=Df2*geo['throat.volume'][Ts]/geo['throat.length'][Ts]/geo['throat.length'][Ts]
+                    a=a+max(Qij,0)#流出
+                    b=b+pore_Co2_nd[Ps[j]]*max(-Qij,0)
+                    c=c+KS
+                    d=d+KS*pore_Co2_nd[Ps[j]]
+                e=k0*pore_nd[i]
+                pore_Co2_nd[i]=(b+d+e)/(a+c)
+        
+        g=panwen(i0=pore_Co2_nd0,i1=pore_Co2_nd,wc=0.01)
+        x=x+1
+        print(x)
+        if x==1000:
+            print('输出无效')
+    print('Co2浓度计算完成一次')
+    
+    
+    
+    H=3.54*10**-7*m.exp(2044/T)
+    Psat=np.random.rand(len(pn.Ps))#孔隙数
+    baoheyali(phases=water,H=H,P=Psat,network=pn)
+    inlet=[]
+    for i in range(len(pn.Ps)):#孔隙数
+        if pore_Co2_nd[i] > Psat[i]:
+            inlet.append([i])#确定饱和位点
+            
+    Invasion(inlet=inlet,network=pn,phases=water,geometry=geo,c=0,d=1)
+    PSco2=set()
+    for i in range(len(inlet)):
+        PSco2=set(PSco2)|set(inlet[i])
+    PSco2=list(PSco2)
+    op.topotools.trim(network=pn, pores=PSco2) 
+    print('提取网络完成一次')
+    
+    
+    
+    
+    Vco2=0
+    for i in range(len(PSco2)):
+        Vco2=Vco2+geo['pore.diameter'][PSco2[i]]**3/6*m.pi
+    saturation=Vco2/sum(geo['pore.volume'])
+    Dyx=Dff(network=pn,geometry=geo,Df=Df,Z=Z)
+    D={}
+    D[saturation]=Dyx
+    Palg(network=pn,phases=water,Pin=101325.05,inlet=pn.pores('back'),Pout=101325,outlet=pn.pores('front'),physics=phys_h2o)
+    print('提取网络后压力计算完成一次')
+    Q1=0
+    for i in range(len(pn.Ts)):
+         phys_h2o['throat.hydraulic_conductance'][i]=1.14*geo['throat.diameter'][i]**4/n/16/geo['throat.length'][i]
+    for i in range(len(pn.Ps)):
+        if pn.Ps[i] in pn.pores('back'):
+            Ps = pn.find_neighbor_pores(pores=pn.Ps[i])
+            for j in range(len(Ps)):
+                Ts = pn.find_neighbor_throats(pores=[Ps[j],pn.Ps[i]], mode='xnor')
+                Q1=Q1+phys_h2o['throat.hydraulic_conductance'][Ts]*(water['pore.pressure'][i]-water['pore.pressure'][Ps[j]])
+    K={}
+    Kxd=Q1*0.001*Z/X/Y/spacing/(0.05)#绝对渗透率煤球
+    K[saturation]=Kxd
+op.io.VTK.save(network=pn, phases=water, filename='侵入情况')
+print(K)
+print(D)
+print(ia)
